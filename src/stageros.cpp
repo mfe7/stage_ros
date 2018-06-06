@@ -54,6 +54,8 @@
 #include "tf/LinearMath/Transform.h"
 #include <std_srvs/Empty.h>
 
+#include <stage_ros/CmdPosesRecScans.h>
+
 #include "tf/transform_broadcaster.h"
 
 #define USAGE "stageros <worldfile>"
@@ -82,6 +84,7 @@ private:
     std::vector<Stg::ModelCamera *> cameramodels;
     std::vector<Stg::ModelRanger *> lasermodels;
     std::vector<Stg::ModelPosition *> positionmodels;
+    std::vector<Stg::Color *> colors;
 
     //a structure representing a robot inthe simulator
     struct StageRobot
@@ -90,6 +93,8 @@ private:
         Stg::ModelPosition* positionmodel; //one position
         std::vector<Stg::ModelCamera *> cameramodels; //multiple cameras per position
         std::vector<Stg::ModelRanger *> lasermodels; //multiple rangers per position
+
+        Stg::Color* color;
 
         //ros publishers
         ros::Publisher odom_pub; //one odom
@@ -111,6 +116,9 @@ private:
     std::vector<Stg::Pose> initial_poses;
     ros::ServiceServer reset_srv_;
 
+    ros::ServiceServer cmd_poses_rec_scans_srv_;
+    // stage_ros::CmdPosesRecScans cmd_poses_rec_scans_srv_;
+
     ros::Publisher clock_pub_;
 
     bool isDepthCanonical;
@@ -122,7 +130,7 @@ private:
 
     static bool s_update(Stg::World* world, StageNode* node)
     {
-        node->WorldCallback();
+        // node->WorldCallback();
         // We return false to indicate that we want to be called again (an
         // odd convention, but that's the way that Stage works).
         return false;
@@ -177,6 +185,9 @@ public:
 
     // Service callback for soft reset
     bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
+
+    // Service callback for commanding an array of poses and returning an array of laserscans
+    bool cb_cmd_poses_rec_scans_srv(stage_ros::CmdPosesRecScans::Request& request, stage_ros::CmdPosesRecScans::Response& response);
 
     // The main simulator object
     Stg::World* world;
@@ -242,6 +253,13 @@ StageNode::mapName(const char *name, size_t robotID, size_t deviceID, Stg::Model
 void
 StageNode::ghfunc(Stg::Model* mod, StageNode* node)
 {
+    // mod->ClearBlocks();
+    // mod->AddBlockRect(
+    
+    // Stg::Color color = mod->GetColor();
+    // ROS_INFO_STREAM(color.r);
+    // color.r = 0.0;
+    // mod->SetColor(color);
     if (dynamic_cast<Stg::ModelRanger *>(mod))
         node->lasermodels.push_back(dynamic_cast<Stg::ModelRanger *>(mod));
     if (dynamic_cast<Stg::ModelPosition *>(mod)) {
@@ -254,7 +272,59 @@ StageNode::ghfunc(Stg::Model* mod, StageNode* node)
         node->cameramodels.push_back(dynamic_cast<Stg::ModelCamera *>(mod));
 }
 
+bool
+StageNode::cb_cmd_poses_rec_scans_srv(stage_ros::CmdPosesRecScans::Request& request, stage_ros::CmdPosesRecScans::Response& response)
+{
+    // necessary??
+    boost::mutex::scoped_lock lock(msg_lock);
+    int num_robots = request.poses.size();
 
+    // Update pose of all robots
+    for (int robot_idx=0; robot_idx<num_robots; robot_idx++){
+        geometry_msgs::Pose ros_pose = request.poses[robot_idx];
+        Stg::Pose pose;
+        double roll, pitch, yaw;
+        tf::Matrix3x3 m(tf::Quaternion(ros_pose.orientation.x,ros_pose.orientation.y,ros_pose.orientation.z,ros_pose.orientation.w));
+        m.getRPY(roll, pitch, yaw);
+        pose.x = ros_pose.position.x;
+        pose.y = ros_pose.position.y;
+        pose.z = 0;
+        yaw = 0;
+        pose.a = yaw;
+        this->positionmodels[robot_idx]->SetPose(pose);
+    }
+
+    // Then update laser sensor for all robots
+    for (int robot_idx=0; robot_idx<num_robots; robot_idx++){
+        StageRobot* robotmodel = const_cast<StageRobot*>(this->robotmodels_[robot_idx]);
+        Stg::ModelRanger* lasermodel = robotmodel->lasermodels[1];
+        std::vector<Stg::ModelRanger::Sensor>& sensors = const_cast<std::vector<Stg::ModelRanger::Sensor>&>(lasermodel->GetSensors());
+        Stg::ModelRanger::Sensor& sensor = sensors[0];
+        sensor.Update(lasermodel);
+
+        sensor_msgs::LaserScan msg;
+        msg.angle_min = -sensor.fov/2.0;
+        msg.angle_max = +sensor.fov/2.0;
+        msg.angle_increment = sensor.fov/(double)(sensor.sample_count-1);
+        msg.range_min = sensor.range.min;
+        msg.range_max = sensor.range.max;
+        msg.ranges.resize(sensor.ranges.size());
+
+        for(unsigned int i = 0; i < sensor.ranges.size(); i++)
+        {
+            msg.ranges[i] = sensor.ranges[i];
+        }
+
+        // if (robotmodel->lasermodels.size() > 1)
+            // msg.header.frame_id = mapName("base_laser_link", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
+        // else
+            // msg.header.frame_id = mapName("base_laser_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
+
+        msg.header.stamp = sim_time;
+        response.laserscans.push_back(msg);
+    }
+    return true;
+}
 
 
 bool
@@ -293,7 +363,8 @@ StageNode::poseReceived(int idx, const boost::shared_ptr<geometry_msgs::Pose con
     pose.z = 0;
     pose.a = yaw;
     this->positionmodels[idx]->SetPose(pose);
-}
+
+    }
 
 void
 StageNode::poseStampedReceived(int idx, const boost::shared_ptr<geometry_msgs::PoseStamped const>& msg)
@@ -424,13 +495,14 @@ StageNode::SubscribeModels()
                 new_robot->camera_pubs.push_back(n_.advertise<sensor_msgs::CameraInfo>(mapName(CAMERA_INFO, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
             }
         }
-
         this->robotmodels_.push_back(new_robot);
     }
     clock_pub_ = n_.advertise<rosgraph_msgs::Clock>("/clock", 10);
 
     // advertising reset service
     reset_srv_ = n_.advertiseService("reset_positions", &StageNode::cb_reset_srv, this);
+    
+    cmd_poses_rec_scans_srv_ = n_.advertiseService("command_poses_receive_scans", &StageNode::cb_cmd_poses_rec_scans_srv, this);
 
     return(0);
 }
@@ -480,8 +552,10 @@ StageNode::WorldCallback()
             Stg::ModelRanger const* lasermodel = robotmodel->lasermodels[s];
             const std::vector<Stg::ModelRanger::Sensor>& sensors = lasermodel->GetSensors();
 
-            if( sensors.size() > 1 )
-                ROS_WARN( "ROS Stage currently supports rangers with 1 sensor only." );
+            // ADD THIS BACK IN!!!
+            // if( sensors.size() > 1 )
+
+                // ROS_WARN( "ROS Stage currently supports rangers with 1 sensor only." );
 
             // for now we access only the zeroth sensor of the ranger - good
             // enough for most laser models that have a single beam origin

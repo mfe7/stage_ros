@@ -10,11 +10,25 @@ find_package(catkin REQUIRED
     std_msgs
     std_srvs
     tf
+    message_generation
 )
+
 
 find_package(Boost REQUIRED COMPONENTS system thread)
 
 find_package(stage REQUIRED)
+
+add_service_files(
+    FILES
+    CmdPosesRecScans.srv
+)
+
+generate_messages(
+    DEPENDENCIES
+    sensor_msgs
+    geometry_msgs
+    std_msgs
+)
 
 include_directories(
   ${catkin_INCLUDE_DIRS}

@@ -81,7 +81,6 @@ private:
     boost::mutex msg_lock;
 
     // The models that we're interested in
-    std::vector<Stg::ModelCamera *> cameramodels;
     std::vector<Stg::ModelRanger *> lasermodels;
     std::vector<Stg::ModelPosition *> positionmodels;
     std::vector<Stg::Color *> colors;
@@ -91,23 +90,16 @@ private:
     {
         //stage related models
         Stg::ModelPosition* positionmodel; //one position
-        std::vector<Stg::ModelCamera *> cameramodels; //multiple cameras per position
         std::vector<Stg::ModelRanger *> lasermodels; //multiple rangers per position
 
         Stg::Color* color;
 
         //ros publishers
-        ros::Publisher odom_pub; //one odom
-        ros::Publisher ground_truth_pub; //one ground truth
 
-        std::vector<ros::Publisher> image_pubs; //multiple images
-        std::vector<ros::Publisher> depth_pubs; //multiple depths
-        std::vector<ros::Publisher> camera_pubs; //multiple cameras
         std::vector<ros::Publisher> laser_pubs; //multiple lasers
 
         ros::Subscriber cmdvel_sub; //one cmd_vel subscriber
         ros::Subscriber pose_sub;
-        ros::Subscriber posestamped_sub;
     };
 
     std::vector<StageRobot const *> robotmodels_;
@@ -178,10 +170,6 @@ public:
 
     // Message callback for a cmd_pose message, which sets positions.
     void poseReceived(int idx, const boost::shared_ptr<geometry_msgs::Pose const>& msg);
-
-    // Message callback for a cmd_pose_stamped message, which sets positions
-    // with a timestamp (e.g., from rviz).
-    void poseStampedReceived(int idx, const boost::shared_ptr<geometry_msgs::PoseStamped const>& msg);
 
     // Service callback for soft reset
     bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
@@ -268,8 +256,6 @@ StageNode::ghfunc(Stg::Model* mod, StageNode* node)
       node->positionmodels.push_back(p);
       node->initial_poses.push_back(p->GetGlobalPose());
     }
-    if (dynamic_cast<Stg::ModelCamera *>(mod))
-        node->cameramodels.push_back(dynamic_cast<Stg::ModelCamera *>(mod));
 }
 
 bool
@@ -291,6 +277,7 @@ StageNode::cb_cmd_poses_rec_scans_srv(stage_ros::CmdPosesRecScans::Request& requ
         pose.z = 0;
         yaw = 0;
         pose.a = yaw;
+        // this->positionmodels[robot_idx]->GoTo(pose);
         this->positionmodels[robot_idx]->SetPose(pose);
     }
 
@@ -366,19 +353,6 @@ StageNode::poseReceived(int idx, const boost::shared_ptr<geometry_msgs::Pose con
 
     }
 
-void
-StageNode::poseStampedReceived(int idx, const boost::shared_ptr<geometry_msgs::PoseStamped const>& msg)
-{
-    // Create a shared pointer to the raw pose and pass it through.
-    // Note that we ignore the header because we're not supporting setting of
-    // poses in an arbitrary frame. Every pose is interpreted to be in Stage's
-    // world frame (which isn't represented anywhere as a tf frame).
-    geometry_msgs::Pose* pose = new geometry_msgs::Pose;
-    *pose = msg->pose;
-    boost::shared_ptr<geometry_msgs::Pose const> pose_ptr(pose);
-    this->poseReceived(idx, pose_ptr);
-}
-
 StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names)
 {
     this->use_model_names = use_model_names;
@@ -453,23 +427,8 @@ StageNode::SubscribeModels()
             }
         }
 
-        for (size_t s = 0; s < this->cameramodels.size(); s++)
-        {
-            if (this->cameramodels[s] and this->cameramodels[s]->Parent() == new_robot->positionmodel)
-            {
-                new_robot->cameramodels.push_back(this->cameramodels[s]);
-                this->cameramodels[s]->Subscribe();
-            }
-        }
-
-        ROS_INFO("Found %lu laser devices and %lu cameras in robot %lu", new_robot->lasermodels.size(), new_robot->cameramodels.size(), r);
-
-        new_robot->odom_pub = n_.advertise<nav_msgs::Odometry>(mapName(ODOM, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10);
-        new_robot->ground_truth_pub = n_.advertise<nav_msgs::Odometry>(mapName(BASE_POSE_GROUND_TRUTH, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10);
         new_robot->cmdvel_sub = n_.subscribe<geometry_msgs::Twist>(mapName(CMD_VEL, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::cmdvelReceived, this, r, _1));
         new_robot->pose_sub = n_.subscribe<geometry_msgs::Pose>(mapName(POSE, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::poseReceived, this, r, _1));
-
-        new_robot->posestamped_sub = n_.subscribe<geometry_msgs::PoseStamped>(mapName(POSESTAMPED, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::poseStampedReceived, this, r, _1));
 
         for (size_t s = 0;  s < new_robot->lasermodels.size(); ++s)
         {
@@ -480,21 +439,6 @@ StageNode::SubscribeModels()
 
         }
 
-        for (size_t s = 0;  s < new_robot->cameramodels.size(); ++s)
-        {
-            if (new_robot->cameramodels.size() == 1)
-            {
-                new_robot->image_pubs.push_back(n_.advertise<sensor_msgs::Image>(mapName(IMAGE, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
-                new_robot->depth_pubs.push_back(n_.advertise<sensor_msgs::Image>(mapName(DEPTH, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
-                new_robot->camera_pubs.push_back(n_.advertise<sensor_msgs::CameraInfo>(mapName(CAMERA_INFO, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
-            }
-            else
-            {
-                new_robot->image_pubs.push_back(n_.advertise<sensor_msgs::Image>(mapName(IMAGE, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
-                new_robot->depth_pubs.push_back(n_.advertise<sensor_msgs::Image>(mapName(DEPTH, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
-                new_robot->camera_pubs.push_back(n_.advertise<sensor_msgs::CameraInfo>(mapName(CAMERA_INFO, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
-            }
-        }
         this->robotmodels_.push_back(new_robot);
     }
     clock_pub_ = n_.advertise<rosgraph_msgs::Clock>("/clock", 10);
@@ -611,240 +555,8 @@ StageNode::WorldCallback()
                                               mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
                                               mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
 
-        // Get latest odometry data
-        // Translate into ROS message format and publish
-        nav_msgs::Odometry odom_msg;
-        odom_msg.pose.pose.position.x = robotmodel->positionmodel->est_pose.x;
-        odom_msg.pose.pose.position.y = robotmodel->positionmodel->est_pose.y;
-        odom_msg.pose.pose.orientation = tf::createQuaternionMsgFromYaw(robotmodel->positionmodel->est_pose.a);
-        Stg::Velocity v = robotmodel->positionmodel->GetVelocity();
-        odom_msg.twist.twist.linear.x = v.x;
-        odom_msg.twist.twist.linear.y = v.y;
-        odom_msg.twist.twist.angular.z = v.a;
-
-        //@todo Publish stall on a separate topic when one becomes available
-        //this->odomMsgs[r].stall = this->positionmodels[r]->Stall();
-        //
-        odom_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
-        odom_msg.header.stamp = sim_time;
-
-        robotmodel->odom_pub.publish(odom_msg);
-
-        // broadcast odometry transform
-        tf::Quaternion odomQ;
-        tf::quaternionMsgToTF(odom_msg.pose.pose.orientation, odomQ);
-        tf::Transform txOdom(odomQ, tf::Point(odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, 0.0));
-        tf.sendTransform(tf::StampedTransform(txOdom, sim_time,
-                                              mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                              mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
-
-        // Also publish the ground truth pose and velocity
-        Stg::Pose gpose = robotmodel->positionmodel->GetGlobalPose();
-        tf::Quaternion q_gpose;
-        q_gpose.setRPY(0.0, 0.0, gpose.a);
-        tf::Transform gt(q_gpose, tf::Point(gpose.x, gpose.y, 0.0));
-        // Velocity is 0 by default and will be set only if there is previous pose and time delta>0
-        Stg::Velocity gvel(0,0,0,0);
-        if (this->base_last_globalpos.size()>r){
-            Stg::Pose prevpose = this->base_last_globalpos.at(r);
-            double dT = (this->sim_time-this->base_last_globalpos_time).toSec();
-            if (dT>0)
-                gvel = Stg::Velocity(
-                            (gpose.x - prevpose.x)/dT,
-                            (gpose.y - prevpose.y)/dT,
-                            (gpose.z - prevpose.z)/dT,
-                            Stg::normalize(gpose.a - prevpose.a)/dT
-                            );
-            this->base_last_globalpos.at(r) = gpose;
-        }else //There are no previous readings, adding current pose...
-            this->base_last_globalpos.push_back(gpose);
-
-        nav_msgs::Odometry ground_truth_msg;
-        ground_truth_msg.pose.pose.position.x     = gt.getOrigin().x();
-        ground_truth_msg.pose.pose.position.y     = gt.getOrigin().y();
-        ground_truth_msg.pose.pose.position.z     = gt.getOrigin().z();
-        ground_truth_msg.pose.pose.orientation.x  = gt.getRotation().x();
-        ground_truth_msg.pose.pose.orientation.y  = gt.getRotation().y();
-        ground_truth_msg.pose.pose.orientation.z  = gt.getRotation().z();
-        ground_truth_msg.pose.pose.orientation.w  = gt.getRotation().w();
-        ground_truth_msg.twist.twist.linear.x = gvel.x;
-        ground_truth_msg.twist.twist.linear.y = gvel.y;
-        ground_truth_msg.twist.twist.linear.z = gvel.z;
-        ground_truth_msg.twist.twist.angular.z = gvel.a;
-
-        ground_truth_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
-        ground_truth_msg.header.stamp = sim_time;
-
-        robotmodel->ground_truth_pub.publish(ground_truth_msg);
-
-        //cameras
-        for (size_t s = 0; s < robotmodel->cameramodels.size(); ++s)
-        {
-            Stg::ModelCamera* cameramodel = robotmodel->cameramodels[s];
-            // Get latest image data
-            // Translate into ROS message format and publish
-            if (robotmodel->image_pubs[s].getNumSubscribers() > 0 && cameramodel->FrameColor())
-            {
-                sensor_msgs::Image image_msg;
-
-                image_msg.height = cameramodel->getHeight();
-                image_msg.width = cameramodel->getWidth();
-                image_msg.encoding = "rgba8";
-                //this->imageMsgs[r].is_bigendian="";
-                image_msg.step = image_msg.width*4;
-                image_msg.data.resize(image_msg.width * image_msg.height * 4);
-
-                memcpy(&(image_msg.data[0]), cameramodel->FrameColor(), image_msg.width * image_msg.height * 4);
-
-                //invert the opengl weirdness
-                int height = image_msg.height - 1;
-                int linewidth = image_msg.width*4;
-
-                char* temp = new char[linewidth];
-                for (int y = 0; y < (height+1)/2; y++)
-                {
-                    memcpy(temp,&image_msg.data[y*linewidth],linewidth);
-                    memcpy(&(image_msg.data[y*linewidth]),&(image_msg.data[(height-y)*linewidth]),linewidth);
-                    memcpy(&(image_msg.data[(height-y)*linewidth]),temp,linewidth);
-                }
-
-                if (robotmodel->cameramodels.size() > 1)
-                    image_msg.header.frame_id = mapName("camera", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
-                else
-                    image_msg.header.frame_id = mapName("camera", r,static_cast<Stg::Model*>(robotmodel->positionmodel));
-                image_msg.header.stamp = sim_time;
-
-                robotmodel->image_pubs[s].publish(image_msg);
-            }
-
-            //Get latest depth data
-            //Translate into ROS message format and publish
-            //Skip if there are no subscribers
-            if (robotmodel->depth_pubs[s].getNumSubscribers()>0 && cameramodel->FrameDepth())
-            {
-                sensor_msgs::Image depth_msg;
-                depth_msg.height = cameramodel->getHeight();
-                depth_msg.width = cameramodel->getWidth();
-                depth_msg.encoding = this->isDepthCanonical?sensor_msgs::image_encodings::TYPE_32FC1:sensor_msgs::image_encodings::TYPE_16UC1;
-                //this->depthMsgs[r].is_bigendian="";
-                int sz = this->isDepthCanonical?sizeof(float):sizeof(uint16_t);
-                size_t len = depth_msg.width * depth_msg.height;
-                depth_msg.step = depth_msg.width * sz;
-                depth_msg.data.resize(len*sz);
-
-                //processing data according to REP118
-                if (this->isDepthCanonical){
-                    double nearClip = cameramodel->getCamera().nearClip();
-                    double farClip = cameramodel->getCamera().farClip();
-                    memcpy(&(depth_msg.data[0]),cameramodel->FrameDepth(),len*sz);
-                    float * data = (float*)&(depth_msg.data[0]);
-                    for (size_t i=0;i<len;++i)
-                        if(data[i]<=nearClip)
-                            data[i] = -INFINITY;
-                        else if(data[i]>=farClip)
-                            data[i] = INFINITY;
-                }
-                else{
-                    int nearClip = (int)(cameramodel->getCamera().nearClip() * 1000);
-                    int farClip = (int)(cameramodel->getCamera().farClip() * 1000);
-                    for (size_t i=0;i<len;++i){
-                        int v = (int)(cameramodel->FrameDepth()[i]*1000);
-                        if (v<=nearClip || v>=farClip) v = 0;
-                        ((uint16_t*)&(depth_msg.data[0]))[i] = (uint16_t) ((v<=nearClip || v>=farClip) ? 0 : v );
-                    }
-                }
-
-                //invert the opengl weirdness
-                int height = depth_msg.height - 1;
-                int linewidth = depth_msg.width*sz;
-
-                char* temp = new char[linewidth];
-                for (int y = 0; y < (height+1)/2; y++)
-                {
-                    memcpy(temp,&depth_msg.data[y*linewidth],linewidth);
-                    memcpy(&(depth_msg.data[y*linewidth]),&(depth_msg.data[(height-y)*linewidth]),linewidth);
-                    memcpy(&(depth_msg.data[(height-y)*linewidth]),temp,linewidth);
-                }
-
-                if (robotmodel->cameramodels.size() > 1)
-                    depth_msg.header.frame_id = mapName("camera", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
-                else
-                    depth_msg.header.frame_id = mapName("camera", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
-                depth_msg.header.stamp = sim_time;
-                robotmodel->depth_pubs[s].publish(depth_msg);
-            }
-
-            //sending camera's tf and info only if image or depth topics are subscribed to
-            if ((robotmodel->image_pubs[s].getNumSubscribers()>0 && cameramodel->FrameColor())
-                    || (robotmodel->depth_pubs[s].getNumSubscribers()>0 && cameramodel->FrameDepth()))
-            {
-
-                Stg::Pose lp = cameramodel->GetPose();
-                tf::Quaternion Q; Q.setRPY(
-                            (cameramodel->getCamera().pitch()*M_PI/180.0)-M_PI,
-                            0.0,
-                            lp.a+(cameramodel->getCamera().yaw()*M_PI/180.0) - robotmodel->positionmodel->GetPose().a
-                            );
-
-                tf::Transform tr =  tf::Transform(Q, tf::Point(lp.x, lp.y, robotmodel->positionmodel->GetGeom().size.z+lp.z));
-
-                if (robotmodel->cameramodels.size() > 1)
-                    tf.sendTransform(tf::StampedTransform(tr, sim_time,
-                                                          mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                                          mapName("camera", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel))));
-                else
-                    tf.sendTransform(tf::StampedTransform(tr, sim_time,
-                                                          mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                                          mapName("camera", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
-
-                sensor_msgs::CameraInfo camera_msg;
-                if (robotmodel->cameramodels.size() > 1)
-                    camera_msg.header.frame_id = mapName("camera", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
-                else
-                    camera_msg.header.frame_id = mapName("camera", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
-                camera_msg.header.stamp = sim_time;
-                camera_msg.height = cameramodel->getHeight();
-                camera_msg.width = cameramodel->getWidth();
-
-                double fx,fy,cx,cy;
-                cx = camera_msg.width / 2.0;
-                cy = camera_msg.height / 2.0;
-                double fovh = cameramodel->getCamera().horizFov()*M_PI/180.0;
-                double fovv = cameramodel->getCamera().vertFov()*M_PI/180.0;
-                //double fx_ = 1.43266615300557*this->cameramodels[r]->getWidth()/tan(fovh);
-                //double fy_ = 1.43266615300557*this->cameramodels[r]->getHeight()/tan(fovv);
-                fx = cameramodel->getWidth()/(2*tan(fovh/2));
-                fy = cameramodel->getHeight()/(2*tan(fovv/2));
-
-                //ROS_INFO("fx=%.4f,%.4f; fy=%.4f,%.4f", fx, fx_, fy, fy_);
-
-
-                camera_msg.D.resize(4, 0.0);
-
-                camera_msg.K[0] = fx;
-                camera_msg.K[2] = cx;
-                camera_msg.K[4] = fy;
-                camera_msg.K[5] = cy;
-                camera_msg.K[8] = 1.0;
-
-                camera_msg.R[0] = 1.0;
-                camera_msg.R[4] = 1.0;
-                camera_msg.R[8] = 1.0;
-
-                camera_msg.P[0] = fx;
-                camera_msg.P[2] = cx;
-                camera_msg.P[5] = fy;
-                camera_msg.P[6] = cy;
-                camera_msg.P[10] = 1.0;
-
-                robotmodel->camera_pubs[s].publish(camera_msg);
-
-            }
-
-        }
     }
 
-    this->base_last_globalpos_time = this->sim_time;
     rosgraph_msgs::Clock clock_msg;
     clock_msg.clock = sim_time;
     this->clock_pub_.publish(clock_msg);

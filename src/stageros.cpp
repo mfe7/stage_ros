@@ -269,17 +269,16 @@ StageNode::cb_cmd_poses_rec_scans_srv(stage_ros::CmdPosesRecScans::Request& requ
     for (int robot_idx=0; robot_idx<num_robots; robot_idx++){
         geometry_msgs::Pose ros_pose = request.poses[robot_idx];
         Stg::Pose pose;
-        double roll, pitch, yaw;
-        tf::Matrix3x3 m(tf::Quaternion(ros_pose.orientation.x,ros_pose.orientation.y,ros_pose.orientation.z,ros_pose.orientation.w));
-        m.getRPY(roll, pitch, yaw);
         pose.x = ros_pose.position.x;
         pose.y = ros_pose.position.y;
         pose.z = 0;
-        yaw = 0;
-        pose.a = yaw;
-        // this->positionmodels[robot_idx]->GoTo(pose);
+        // major ROS hack to just send yaw within a quaternion
+        pose.a = ros_pose.orientation.w;
         this->positionmodels[robot_idx]->SetPose(pose);
     }
+    this->world->UpdateAll();
+    this->world->Stop();
+
 
     // Then update laser sensor for all robots
     for (int robot_idx=0; robot_idx<num_robots; robot_idx++){
@@ -411,36 +410,36 @@ StageNode::SubscribeModels()
 {
     n_.setParam("/use_sim_time", true);
 
-    for (size_t r = 0; r < this->positionmodels.size(); r++)
-    {
-        StageRobot* new_robot = new StageRobot;
-        new_robot->positionmodel = this->positionmodels[r];
-        new_robot->positionmodel->Subscribe();
+    // for (size_t r = 0; r < this->positionmodels.size(); r++)
+    // {
+    //     StageRobot* new_robot = new StageRobot;
+    //     new_robot->positionmodel = this->positionmodels[r];
+    //     new_robot->positionmodel->Subscribe();
 
 
-        for (size_t s = 0; s < this->lasermodels.size(); s++)
-        {
-            if (this->lasermodels[s] and this->lasermodels[s]->Parent() == new_robot->positionmodel)
-            {
-                new_robot->lasermodels.push_back(this->lasermodels[s]);
-                this->lasermodels[s]->Subscribe();
-            }
-        }
+    //     for (size_t s = 0; s < this->lasermodels.size(); s++)
+    //     {
+    //         if (this->lasermodels[s] and this->lasermodels[s]->Parent() == new_robot->positionmodel)
+    //         {
+    //             new_robot->lasermodels.push_back(this->lasermodels[s]);
+    //             this->lasermodels[s]->Subscribe();
+    //         }
+    //     }
 
-        new_robot->cmdvel_sub = n_.subscribe<geometry_msgs::Twist>(mapName(CMD_VEL, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::cmdvelReceived, this, r, _1));
-        new_robot->pose_sub = n_.subscribe<geometry_msgs::Pose>(mapName(POSE, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::poseReceived, this, r, _1));
+    //     new_robot->cmdvel_sub = n_.subscribe<geometry_msgs::Twist>(mapName(CMD_VEL, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::cmdvelReceived, this, r, _1));
+    //     new_robot->pose_sub = n_.subscribe<geometry_msgs::Pose>(mapName(POSE, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::poseReceived, this, r, _1));
 
-        for (size_t s = 0;  s < new_robot->lasermodels.size(); ++s)
-        {
-            if (new_robot->lasermodels.size() == 1)
-                new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
-            else
-                new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+    //     for (size_t s = 0;  s < new_robot->lasermodels.size(); ++s)
+    //     {
+    //         if (new_robot->lasermodels.size() == 1)
+    //             new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+    //         else
+    //             new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
 
-        }
+    //     }
 
-        this->robotmodels_.push_back(new_robot);
-    }
+    //     this->robotmodels_.push_back(new_robot);
+    // }
     clock_pub_ = n_.advertise<rosgraph_msgs::Clock>("/clock", 10);
 
     // advertising reset service
@@ -460,7 +459,8 @@ StageNode::~StageNode()
 bool
 StageNode::UpdateWorld()
 {
-    return this->world->UpdateAll();
+	return false;
+    // return this->world->UpdateAll();
 }
 
 void
@@ -532,28 +532,28 @@ StageNode::WorldCallback()
                 robotmodel->laser_pubs[s].publish(msg);
             }
 
-            // Also publish the base->base_laser_link Tx.  This could eventually move
-            // into being retrieved from the param server as a static Tx.
-            Stg::Pose lp = lasermodel->GetPose();
-            tf::Quaternion laserQ;
-            laserQ.setRPY(0.0, 0.0, lp.a);
-            tf::Transform txLaser =  tf::Transform(laserQ, tf::Point(lp.x, lp.y, robotmodel->positionmodel->GetGeom().size.z + lp.z));
+            // // Also publish the base->base_laser_link Tx.  This could eventually move
+            // // into being retrieved from the param server as a static Tx.
+            // Stg::Pose lp = lasermodel->GetPose();
+            // tf::Quaternion laserQ;
+            // laserQ.setRPY(0.0, 0.0, lp.a);
+            // tf::Transform txLaser =  tf::Transform(laserQ, tf::Point(lp.x, lp.y, robotmodel->positionmodel->GetGeom().size.z + lp.z));
 
-            if (robotmodel->lasermodels.size() > 1)
-                tf.sendTransform(tf::StampedTransform(txLaser, sim_time,
-                                                      mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                                      mapName("base_laser_link", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel))));
-            else
-                tf.sendTransform(tf::StampedTransform(txLaser, sim_time,
-                                                      mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                                      mapName("base_laser_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+            // if (robotmodel->lasermodels.size() > 1)
+            //     tf.sendTransform(tf::StampedTransform(txLaser, sim_time,
+            //                                           mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+            //                                           mapName("base_laser_link", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+            // else
+            //     tf.sendTransform(tf::StampedTransform(txLaser, sim_time,
+            //                                           mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+            //                                           mapName("base_laser_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
         }
 
-        //the position of the robot
-        tf.sendTransform(tf::StampedTransform(tf::Transform::getIdentity(),
-                                              sim_time,
-                                              mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
-                                              mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+        // //the position of the robot
+        // tf.sendTransform(tf::StampedTransform(tf::Transform::getIdentity(),
+        //                                       sim_time,
+        //                                       mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+        //                                       mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
 
     }
 
@@ -591,17 +591,19 @@ main(int argc, char** argv)
     boost::thread t = boost::thread(boost::bind(&ros::spin));
 
     // New in Stage 4.1.1: must Start() the world.
-    sn.world->Start();
+    // sn.world->Start();
 
     // TODO: get rid of this fixed-duration sleep, using some Stage builtin
     // PauseUntilNextUpdate() functionality.
     ros::WallRate r(10.0);
     while(ros::ok() && !sn.world->TestQuit())
     {
-        if(gui)
+        if(gui){
             Fl::wait(r.expectedCycleTime().toSec());
+        }
         else
         {
+        	std::cout << "else!!" << std::endl;
             sn.UpdateWorld();
             r.sleep();
         }
